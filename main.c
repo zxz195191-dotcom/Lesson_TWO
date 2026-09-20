@@ -23,8 +23,8 @@ void UART_Init(){
 
     DL_UART_Main_enablePower(UART_0_INST);
 
-    DL_GPIO_initPeripheralOutputFunction(IOMUX_PINCM21, GPIO_UART_0_IOMUX_TX_FUNC);
-    DL_GPIO_initPeripheralInputFunction(GPIO_UART_0_IOMUX_RX, GPIO_UART_0_IOMUX_RX_FUNC);
+    DL_GPIO_initPeripheralOutputFunction(IOMUX_PINCM21, IOMUX_PINCM21_PF_UART0_TX);
+    DL_GPIO_initPeripheralInputFunction(IOMUX_PINCM22, IOMUX_PINCM2_PF_UART0_RX);
 
     DL_UART_Main_setClockConfig(UART_0_INST,(DL_UART_Main_ClockConfig  *) &UART_0_Clk);
     DL_UART_Main_init(UART_0_INST,(DL_UART_Main_Config *) &UART_0_Cfg);//要先设置时钟再初始化串口
@@ -41,7 +41,7 @@ void UART_Init(){
 }
 
 void LED_Init(){
-    DL_GPIO_initPeripheralOutput(IOMUX_PINCM31);
+    DL_GPIO_initDigitalOutput(IOMUX_PINCM31);
     DL_GPIO_setPins(GPIOB, DL_GPIO_PIN_14);
     DL_GPIO_enableOutput(GPIOB, DL_GPIO_PIN_14);
 }
@@ -55,7 +55,7 @@ void Btn_Init(){
 }
 
 void SysTick_Init(){
-    CPUCLK_FREQ(CPUCLK_FREQ / 1000U);
+    DL_SYSTICK_config(CPUCLK_FREQ / 1000U);
 }
 
 volatile uint32_t sys_ms = 0;
@@ -67,15 +67,25 @@ uint32_t millis(){
     return sys_ms;
 }
 
+
+
+
+
+
+
 // volatile uint8_t EchoData = 0;错误 历程是iqr内部消化不涉及while 所以要防止优化
 uint8_t EchoData = 0;
 volatile bool rx_ready = false;
-
+volatile uint8_t rx_data = 0;
+volatile uint32_t rx_irq_count = 0;
 void UART0_IRQHandler(){
     switch(DL_UART_Main_getPendingInterrupt(UART_0_INST)){
         case DL_UART_MAIN_IIDX_RX:
-        
-            EchoData = DL_UART_Main_receiveData(UART_0_INST);
+
+            rx_data = DL_UART_Main_receiveData(UART_0_INST);
+            rx_ready = true;
+            // rx_irq_count++;
+
         break;
         
         default:
@@ -83,6 +93,48 @@ void UART0_IRQHandler(){
     }
 }
 
+
+#define BUF_SIZE 8
+
+uint8_t buffer[BUF_SIZE];
+
+volatile uint8_t head = 0;
+volatile uint8_t tile = 0;
+volatile bool full = false;
+
+bool Buffer_Push(uint8_t data){
+    
+
+    if(((head + 1) % 8 ) == teil) {  full = true;  }
+
+    if(full) return false;
+    else{        
+        buffer[head] = data ;
+        //buffer[BUF_SIZE] |= data << head;这样行不行 虽然按照我现在的功底 应该是两个都是错的
+        head++;
+    }
+
+    head = head % 8;//0开始 ++ -> 1%8=7 ... 7%8=1 -> 8%8 = 0 ; 0 1 2 3 4 5 6 7
+    //                                                         t             h ( h++ == t )   
+    return true;
+}
+
+
+bool Buffer_Pop(uint8_t *data)//确实不理解为什么* 因为这个“data”在某处实例化之后 会在push被赋值 然后直接访问变量位置就可以省出来位置吗
+{
+    if(full) return false;
+
+    &data = buffer[tile]
+    DL_UART_Main_transmitData(UART_0_INST,&data);
+
+    tile = (tile + 1) % 8;
+
+    return true;
+}
+
+
+uint32_t rx_main_count = 0;
+bool tx_busy = false , rx_busy = false;
 int main(void)
 {
     SYSCFG_DL_init();
@@ -90,28 +142,109 @@ int main(void)
     UART_Init();
     LED_Init();
     Btn_Init();
-    SysTick_Init()
+    SysTick_Init();
 
+    uint8_t data ;
     while (1) 
     {
+        rx_busy = Buffer_Push(data);
+        tx_busy = Buffer_Pop(&data);
+
         if(rx_ready){
             rx_ready = false;
+
+            // DL_UART_Main_transmitData(UART_0_INST,rx_data);
+            // rx_main_count++;
+            delay_cycles(CPUCLK_FREQ / 100);
+
         }
 
     }
 }
 
+
+
+
+
+
 /*
 为什么先设初始电平再enable output？ 养成好习惯 之后初始未定义电平可能会带来意料外的故障
+
+
 
 为什么CPUCLK/1000？一秒钟翻转3200000次 现在需要每1ms反馈一次 那就需要1s来回1000次 3200000/1000=3200？所以不应该是3200吗
 应该是 CPUCLK_FREQ/（CPUCLK_FREQ/1000） -> 3200000/(3200000/1000)= 3200000/3200=1000
 
-为什么system_ms volatile目前浅显的分类办法是 是否会被主函数调用 纯粹的iqr 之类的控制的变量需要volatile （话说const又是？）
+是 32,000,000 Hz = 32 MHz，不是 3,200,000。
+
+数 32000 个 CPU tick
+↓
+过去约 1 ms
+↓
+产生一次 SysTick IRQ
+↓
+system_ms++
+
+
+
+
+为什么system_ms volatile 目前浅显的分类办法是 是否会被主函数调用 纯粹的iqr 之类的控制的变量需要volatile （话说const又是？）
+
+真正判断的是：
+
+一个变量会不会在当前代码执行流“看不到的地方”发生改变，同时另一个执行上下文还会访问它？
+
+const 的意思就是：
+
+这份配置创建以后，不允许普通 C 代码再修改它。
+
+
+
 
 为什么ISR里只++？中断内部简单逻辑 防止卡死
+
+ISR 占 CPU 太久，会：
+
+延迟其他中断；
+增大系统响应抖动；
+严重时丢事件；
+整个程序表现得像“卡”。
+
+
+
+
+
 
 为什么还额外包一层millis()？一个变量 虽然我还是觉得直接用没啥 但是看你的意思是防止多处调用造成冲突？
 dl库里有好多同一个引脚define了不同 但是实际对象一样的别名 为了语境贴切很好理解目的 
 多包一层最大意义就sys_ms不可能被millis修改 或者说防止被修改？
+
+它真正的价值是：
+
+把“时间从哪里来”藏起来，给上层一个稳定接口。
+
+按钮只知道：
+
+millis()
+
+它不需要知道：
+
+现在是 SysTick
+以后换 Timer
+还是 RTOS tick
+
+假设以后底层改成：
+
+uint32_t millis(){
+    return Timer_GetMilliseconds();
+}
+
+按钮代码：
+
+if(millis() - start >= 600)
+
+完全不用改。
+
+这叫封装 / abstraction
+
 */
