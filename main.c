@@ -76,45 +76,26 @@ uint32_t millis(){
 // volatile uint8_t EchoData = 0;错误 历程是iqr内部消化不涉及while 所以要防止优化
 uint8_t EchoData = 0;
 volatile bool rx_ready = false;
-volatile uint8_t rx_data = 0;
+// volatile uint8_t rx_data = 0;
 volatile uint32_t rx_irq_count = 0;
-void UART0_IRQHandler(){
-    switch(DL_UART_Main_getPendingInterrupt(UART_0_INST)){
-        case DL_UART_MAIN_IIDX_RX:
 
-            rx_data = DL_UART_Main_receiveData(UART_0_INST);
-            rx_ready = true;
-            // rx_irq_count++;
-
-        break;
-        
-        default:
-            break;        
-    }
-}
 
 
 #define BUF_SIZE 8
 
 uint8_t buffer[BUF_SIZE];
 
-volatile uint8_t head = 0;
-volatile uint8_t tile = 0;
-volatile bool full = false;
+volatile uint8_t write = 0;//head
+volatile uint8_t read = 0;//tile
+// volatile bool full = false;
 
 bool Buffer_Push(uint8_t data){
     
+    if((write = (write + 1) % BUF_SIZE) == read) return false;
 
-    if(((head + 1) % 8 ) == teil) {  full = true;  }
+    buffer[write] = data ;
 
-    if(full) return false;
-    else{        
-        buffer[head] = data ;
-        //buffer[BUF_SIZE] |= data << head;这样行不行 虽然按照我现在的功底 应该是两个都是错的
-        head++;
-    }
-
-    head = head % 8;//0开始 ++ -> 1%8=7 ... 7%8=1 -> 8%8 = 0 ; 0 1 2 3 4 5 6 7
+    write = (write + 1) % BUF_SIZE;//0开始 ++ -> 1%8=1 ... 7%8=7 -> 8%8 = 0 ; 0 1 2 3 4 5 6 7
     //                                                         t             h ( h++ == t )   
     return true;
 }
@@ -122,19 +103,22 @@ bool Buffer_Push(uint8_t data){
 
 bool Buffer_Pop(uint8_t *data)//确实不理解为什么* 因为这个“data”在某处实例化之后 会在push被赋值 然后直接访问变量位置就可以省出来位置吗
 {
-    if(full) return false;
+     if(read == write) return false;
 
-    &data = buffer[tile]
-    DL_UART_Main_transmitData(UART_0_INST,&data);
+    *data = buffer[read];//data是存储存储数据地址的变量 &data是访问地址本身 *data是访问数据内容
+    
+    // DL_UART_Main_transmitData(UART_0_INST,&data);
 
-    tile = (tile + 1) % 8;
+    read = (read + 1) % BUF_SIZE;
 
     return true;
 }
 
 
 uint32_t rx_main_count = 0;
-bool tx_busy = false , rx_busy = false;
+// bool tx_busy = false , rx_busy = false;
+
+volatile uint8_t data = 0;
 int main(void)
 {
     SYSCFG_DL_init();
@@ -147,24 +131,42 @@ int main(void)
     uint8_t data ;
     while (1) 
     {
-        rx_busy = Buffer_Push(data);
-        tx_busy = Buffer_Pop(&data);
 
-        if(rx_ready){
-            rx_ready = false;
+        // if(rx_ready){
+        //     rx_ready = false;
 
-            // DL_UART_Main_transmitData(UART_0_INST,rx_data);
-            // rx_main_count++;
+        //     // DL_UART_Main_transmitData(UART_0_INST,rx_data);
+        //     rx_main_count++;
+        //     delay_cycles(CPUCLK_FREQ / 100);
+
+        // }
+        if(Buffer_Pop(&data)){
+            DL_UART_Main_transmitData(UART_0_INST,data);
+            rx_main_count++;
             delay_cycles(CPUCLK_FREQ / 100);
-
         }
+
 
     }
 }
 
 
 
+void UART0_IRQHandler(){
+    switch(DL_UART_Main_getPendingInterrupt(UART_0_INST)){
+        case DL_UART_MAIN_IIDX_RX:
 
+            data = DL_UART_Main_receiveData(UART_0_INST);
+            Buffer_Push(data);
+            // rx_ready = true;
+            rx_irq_count++;
+
+        break;
+        
+        default:
+            break;        
+    }
+}
 
 
 /*
